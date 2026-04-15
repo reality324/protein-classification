@@ -259,7 +259,41 @@ TRAIN_CONFIG = {
 
 ---
 
-## 📚 参考项目
+## 📚 参考项目和引用
+
+本项目参考了以下工作：
+
+### EC Number 预测
+
+EC Number 预测模块参考了 ECRECer 项目：
+
+```tex
+@article{shi2023enzyme,
+  title={Enzyme Commission Number Prediction and Benchmarking with Hierarchical Dual-core Multitask Learning Framework},
+  author={Shi, Zhenkun and Deng, Rui and Yuan, Qianqian and Mao, Zhitao and Wang, Ruoyu and Li, Haoran and Liao, Xiaoping and Ma, Hongwu},
+  journal={Research},
+  year={2023},
+  publisher={AAAS}
+}
+```
+
+### 细胞定位预测
+
+细胞定位预测模块参考了 Amazon SageMaker 的蛋白质分类项目：
+
+```tex
+@misc{aws-sagemaker-protein-classification,
+  title={Fine-tuning and deploying ProtBert Model for Protein Classification using Amazon SageMaker},
+  author={AWS Samples},
+  year={2021},
+  publisher={GitHub},
+  journal={GitHub repository},
+  howpublished={\url{https://github.com/aws-samples/amazon-sagemaker-protein-classification}},
+  url={https://github.com/aws-samples/amazon-sagemaker-protein-classification}
+}
+```
+
+### 其他参考项目
 
 - [ECRECer](https://github.com/kingstdio/ECRECer) - EC Number 预测
 - [ESM](https://github.com/facebookresearch/esm) - 蛋白质语言模型

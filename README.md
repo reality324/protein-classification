@@ -88,7 +88,7 @@ ProteinClassifier/
 ### 1. Data Preparation
 
 ```bash
-cd /home/tianwangcong/ProteinClassifier
+cd /home/path/to/your/...
 python scripts/data/prepare_data.py
 ```
 

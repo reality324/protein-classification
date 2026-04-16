@@ -1,0 +1,19 @@
+{
+  "embedding_method": "esm2_35M",
+  "embedding_dim": 480,
+  "samples_per_class": 1000,
+  "train_samples": 8000,
+  "val_samples": 4000,
+  "test_samples": 4000,
+  "num_classes": 8,
+  "class_names": [
+    "无EC",
+    "EC1-氧化还原酶",
+    "EC2-转移酶",
+    "EC3-水解酶",
+    "EC4-裂解酶",
+    "EC5-异构酶",
+    "EC6-连接酶",
+    "EC7-转位酶"
+  ]
+}

@@ -13,10 +13,7 @@ import joblib
 
 import sys
 sys.path.append(str(Path(__file__).parent.parent.parent))
-from configs.config import (
-    RAW_DATA_DIR, PROCESSED_DATA_DIR, DATASETS_DIR,
-    FILE_PATHS
-)
+from configs.config import RAW_DATA_DIR, PROCESSED_DATA_DIR, DATASETS_DIR
 
 
 class BaseLabelEncoder:

@@ -8,6 +8,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
 RAW_DATA_DIR = DATA_DIR / "datasets"
 PROCESSED_DATA_DIR = DATA_DIR / "processed"
+DATASETS_DIR = DATA_DIR / "datasets"
 MODELS_DIR = PROJECT_ROOT / "models"
 RESULTS_DIR = PROJECT_ROOT / "results"
 

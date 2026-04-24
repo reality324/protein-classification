@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 import json
 import time
+import re
 from sklearn.metrics import accuracy_score, f1_score
 from sklearn.preprocessing import StandardScaler
 
@@ -55,52 +56,61 @@ class MultitaskModel(nn.Module):
 
 
 def load_data(data_dir, esm2_dir):
-    """加载多任务数据"""
+    """加载多任务数据
+    
+    注意: 数据划分必须与 generate_esm2_features.py 保持一致 (60/20/20)
+    """
     df = pd.read_parquet(data_dir)
     
-    # EC标签：提取主类编号 (1-7)
-    ec_cols = [c for c in df.columns if c.startswith('ec_')]
-    y_ec = np.argmax(df[ec_cols].values, axis=1)  # 0-74的类别
+    # EC标签 - 使用 one-hot 编码列
+    ec_cols = [c for c in df.columns if c.startswith('ec_') and c.startswith('ec_') and c not in ['ec_number', 'ec_main_class']]
+    ec_cols = [c for c in df.columns if re.match(r'^ec_\d+$', c)]  # ec_1, ec_2, ..., ec_7
+    y_ec = np.argmax(df[ec_cols].values, axis=1)  # 0-6 的类别 (EC 1-7)
     
-    # 从列名提取EC主类: ec_1.1 -> 1, ec_2.1 -> 2, etc.
-    def get_main_class(idx_list):
-        main_classes = []
-        for i in idx_list:
-            ec_col = ec_cols[y_ec[i]]
-            main_class = int(ec_col.split('_')[1].split('.')[0])  # 提取1-7
-            main_classes.append(main_class - 1)  # 转为0-6
-        return np.array(main_classes)
-    
-    # Localization: loc_Cytoplasm -> 0, etc.
-    loc_cols = [c for c in df.columns if c.startswith('loc_')]
+    # Localization - 使用 one-hot 编码列
+    loc_cols = [c for c in df.columns if c.startswith('loc_') and c != 'loc_normalized']
     y_loc = np.argmax(df[loc_cols].values, axis=1)
     
-    # Function: func_Cytoplasm -> 0, etc.
-    func_cols = [c for c in df.columns if c.startswith('func_')]
+    # Function - 使用 one-hot 编码列
+    func_cols = [c for c in df.columns if c.startswith('func_') and c != 'func_normalized']
     y_func = np.argmax(df[func_cols].values, axis=1)
     
-    # 随机划分
+    # 随机划分 - 必须与 generate_esm2_features.py 完全一致！
     indices = np.arange(len(df))
     np.random.seed(RANDOM_SEED)
     np.random.shuffle(indices)
     
     n = len(df)
-    train_end = int(n * 0.8)
-    train_idx = indices[:train_end]
-    test_idx = indices[train_end:]
+    train_end = int(n * 0.6)    # 60%
+    val_end = int(n * 0.8)       # 20%
     
-    # ESM2特征
-    train_features = np.load(esm2_dir / "train_features.npy")
-    test_features = np.load(esm2_dir / "test_features.npy")
+    train_idx = indices[:train_end]   # 0-2999 (3000)
+    val_idx = indices[train_end:val_end]  # 3000-3999 (1000)
+    test_idx = indices[val_end:]      # 4000-4999 (1000)
     
-    # 标签
+    # ESM2特征 - 从预生成的特征文件加载
+    X_train = np.load(esm2_dir / "train_features.npy")
+    X_val = np.load(esm2_dir / "val_features.npy")
+    X_test = np.load(esm2_dir / "test_features.npy")
+    
+    # 验证数据维度一致性
+    assert len(X_train) == len(train_idx), f"Train features mismatch: {len(X_train)} vs {len(train_idx)}"
+    assert len(X_val) == len(val_idx), f"Val features mismatch: {len(X_val)} vs {len(val_idx)}"
+    assert len(X_test) == len(test_idx), f"Test features mismatch: {len(X_test)} vs {len(test_idx)}"
+    
+    # 标签 - 按划分索引对应
     y_train = {
-        'ec': get_main_class(train_idx),
+        'ec': y_ec[train_idx],
         'localization': y_loc[train_idx],
         'function': y_func[train_idx],
     }
+    y_val = {
+        'ec': y_ec[val_idx],
+        'localization': y_loc[val_idx],
+        'function': y_func[val_idx],
+    }
     y_test = {
-        'ec': get_main_class(test_idx),
+        'ec': y_ec[test_idx],
         'localization': y_loc[test_idx],
         'function': y_func[test_idx],
     }
@@ -112,19 +122,33 @@ def load_data(data_dir, esm2_dir):
         'function': {i: c.replace('func_', '') for i, c in enumerate(func_cols)},
     }
     
-    return train_features, test_features, y_train, y_test, class_names
+    # 任务维度
+    task_dims = {
+        'ec': len(ec_cols),
+        'localization': len(loc_cols),
+        'function': len(func_cols),
+    }
+    
+    return X_train, X_val, X_test, y_train, y_val, y_test, class_names, task_dims
 
 
-def train_multitask(X_train, X_test, y_train, y_test, task_dims, 
+def train_multitask(X_train, X_val, X_test, y_train, y_val, y_test, task_dims, 
                     epochs=100, batch_size=64, lr=0.001):
-    """训练多任务模型"""
+    """训练多任务模型
+    
+    Args:
+        X_train, X_val, X_test: 训练集、验证集、测试集特征
+        y_train, y_val, y_test: 对应的标签字典
+    """
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     scaler = StandardScaler()
     X_train_scaled = scaler.fit_transform(X_train)
+    X_val_scaled = scaler.transform(X_val)
     X_test_scaled = scaler.transform(X_test)
     
     X_train_t = torch.FloatTensor(X_train_scaled).to(device)
+    X_val_t = torch.FloatTensor(X_val_scaled).to(device)
     X_test_t = torch.FloatTensor(X_test_scaled).to(device)
     
     model = MultitaskModel(X_train.shape[1], task_dims).to(device)
@@ -133,8 +157,10 @@ def train_multitask(X_train, X_test, y_train, y_test, task_dims,
     criteria = {task: nn.CrossEntropyLoss() for task in task_dims}
     optimizer = optim.Adam(model.parameters(), lr=lr)
     
-    best_total_f1 = 0
+    best_val_f1 = 0
     best_model_state = None
+    patience = 20
+    no_improve = 0
     
     for epoch in range(epochs):
         model.train()
@@ -157,23 +183,32 @@ def train_multitask(X_train, X_test, y_train, y_test, task_dims,
             optimizer.step()
             total_loss += loss.item()
         
-        # 验证
+        # 验证 - 使用验证集
         model.eval()
         with torch.no_grad():
-            outputs = model(X_test_t)
+            outputs = model(X_val_t)
             f1_total = 0
             for task in task_dims:
                 _, preds = torch.max(outputs[task], 1)
-                f1 = f1_score(y_test[task], preds.cpu().numpy(), average='macro')
+                f1 = f1_score(y_val[task], preds.cpu().numpy(), average='macro')
                 f1_total += f1
             
-            avg_f1 = f1_total / len(task_dims)
-            if avg_f1 > best_total_f1:
-                best_total_f1 = avg_f1
+            val_f1 = f1_total / len(task_dims)
+            
+            # 早停
+            if val_f1 > best_val_f1:
+                best_val_f1 = val_f1
                 best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+                no_improve = 0
+            else:
+                no_improve += 1
         
         if (epoch + 1) % 20 == 0:
-            print(f"    Epoch {epoch+1}/{epochs}, Loss: {total_loss:.4f}, Avg F1: {avg_f1:.4f}")
+            print(f"    Epoch {epoch+1}/{epochs}, Loss: {total_loss:.4f}, Val F1: {val_f1:.4f}")
+        
+        if no_improve >= patience:
+            print(f"    Early stopping at epoch {epoch+1}")
+            break
     
     model.load_state_dict(best_model_state)
     return model, scaler
@@ -196,23 +231,24 @@ def main():
     print("训练多任务模型")
     print("=" * 60)
     
-    # 任务配置
+    # 任务配置 - 从数据中动态获取
     task_dims = {
         'ec': 7,           # EC主类
-        'localization': 7,  # 细胞定位
+        'localization': 9,  # 细胞定位
         'function': 7,      # 分子功能
     }
     
     # 加载数据
     print("\n[1/4] 加载数据...")
-    X_train, X_test, y_train, y_test, class_names = load_data(Path(args.data), Path(args.esm2_dir))
-    print(f"    训练样本: {len(X_train)}, 测试样本: {len(X_test)}")
+    X_train, X_val, X_test, y_train, y_val, y_test, class_names, task_dims = load_data(Path(args.data), Path(args.esm2_dir))
+    print(f"    训练样本: {len(X_train)}, 验证样本: {len(X_val)}, 测试样本: {len(X_test)}")
+    print(f"    任务维度: EC={task_dims['ec']}, 定位={task_dims['localization']}, 功能={task_dims['function']}")
     print(f"    任务: {list(task_dims.keys())}")
     
     # 训练
     print("\n[2/4] 训练模型...")
     start_time = time.time()
-    model, scaler = train_multitask(X_train, X_test, y_train, y_test, task_dims,
+    model, scaler = train_multitask(X_train, X_val, X_test, y_train, y_val, y_test, task_dims,
                                    epochs=args.epochs, batch_size=args.batch_size, lr=args.lr)
     train_time = time.time() - start_time
     print(f"    训练完成! 耗时: {train_time:.2f}s")
@@ -258,6 +294,8 @@ def main():
         "batch_size": args.batch_size,
         "learning_rate": args.lr,
         "train_samples": len(y_train['ec']),
+        "val_samples": len(y_val['ec']),
+        "test_samples": len(y_test['ec']),
         "test_results": results,
         "train_time": float(train_time),
     }

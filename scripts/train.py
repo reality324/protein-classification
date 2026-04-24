@@ -38,7 +38,16 @@ def parse_args():
 
 def load_data(encoding: str, data_path: str = None):
     """加载数据"""
-    if data_path and Path(data_path).exists():
+    if encoding == "esm2":
+        # 加载预计算的 ESM2 特征
+        print("加载预计算 ESM2 特征...")
+        dataset = ProteinDataset(encoding="esm2", task="ec")
+        dataset.load_from_esm2_features(
+            features_dir="data/processed/esm2_aligned",
+            labels_parquet="data/datasets/train_subset.parquet",
+        )
+        return dataset
+    elif data_path and Path(data_path).exists():
         print(f"从文件加载数据: {data_path}")
         dataset = ProteinDataset()
         dataset.load_from_files(data_path)

@@ -17,6 +17,7 @@ import time
 import re
 from sklearn.metrics import accuracy_score, f1_score
 from sklearn.preprocessing import StandardScaler
+from sklearn.utils.class_weight import compute_class_weight
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
@@ -132,6 +133,52 @@ def load_data(data_dir, esm2_dir):
     return X_train, X_val, X_test, y_train, y_val, y_test, class_names, task_dims
 
 
+def compute_task_weights(y_train_task, scale_factor=10.0):
+    """计算类别权重，处理数据不平衡问题
+    
+    使用增强的 balanced 策略，对少数类给予更高权重
+    scale_factor: 权重放大倍数，越大对少数类越友好
+    """
+    classes = np.unique(y_train_task)
+    weights = compute_class_weight('balanced', classes=classes, y=y_train_task)
+    # 进一步放大权重差异
+    weights = weights ** 0.5 * scale_factor  # 平方根平滑，再乘以放大因子
+    weights = np.clip(weights, 1.0, 100.0)  # 限制最大权重
+    return torch.FloatTensor(weights)
+
+
+class FocalLoss(nn.Module):
+    """Focal Loss 用于处理类别不平衡问题
+    
+    Focal Loss = -alpha * (1 - p_t)^gamma * log(p_t)
+    
+    - p_t: 模型预测为正确类别的概率
+    - gamma: 聚焦参数，越大越关注难分类样本（通常2.0）
+    - alpha: 类别权重
+    
+    核心思想：当模型对某个样本很有把握时（p_t 接近1），loss会很小；
+    只有当模型难以分类时（p_t 接近0.5），loss才会比较大。
+    """
+    
+    def __init__(self, gamma=2.0, alpha=None, reduction='mean'):
+        super().__init__()
+        self.gamma = gamma
+        self.alpha = alpha
+        self.reduction = reduction
+    
+    def forward(self, inputs, targets):
+        ce_loss = nn.functional.cross_entropy(inputs, targets, reduction='none', weight=self.alpha)
+        pt = torch.exp(-ce_loss)
+        focal_weight = (1 - pt) ** self.gamma
+        focal_loss = focal_weight * ce_loss
+        
+        if self.reduction == 'mean':
+            return focal_loss.mean()
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        return focal_loss
+
+
 def train_multitask(X_train, X_val, X_test, y_train, y_val, y_test, task_dims, 
                     epochs=100, batch_size=64, lr=0.001):
     """训练多任务模型
@@ -153,10 +200,16 @@ def train_multitask(X_train, X_val, X_test, y_train, y_val, y_test, task_dims,
     
     model = MultitaskModel(X_train.shape[1], task_dims).to(device)
     
-    # 损失函数
-    criteria = {task: nn.CrossEntropyLoss() for task in task_dims}
-    optimizer = optim.Adam(model.parameters(), lr=lr)
+    # 损失函数 - 使用增强的类别权重 CrossEntropy
+    criteria = {}
+    for task, num_classes in task_dims.items():
+        weights = compute_task_weights(y_train[task], scale_factor=10.0).to(device)
+        criteria[task] = nn.CrossEntropyLoss(weight=weights)
     
+    # 使用更小的学习率让模型更好收敛
+    optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
+    
+    # 使用 Macro F1 作为早停指标（而不是准确率），更能反映少数类表现
     best_val_f1 = 0
     best_model_state = None
     patience = 20
@@ -176,24 +229,29 @@ def train_multitask(X_train, X_val, X_test, y_train, y_val, y_test, task_dims,
             
             loss = 0
             for task in task_dims:
-                y_task = torch.LongTensor(y_train[task][batch_idx]).to(device)
+                y_task = torch.LongTensor(y_train[task][batch_idx.cpu().numpy()]).to(device)
                 loss += criteria[task](outputs[task], y_task)
             
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
         
-        # 验证 - 使用验证集
+        # 验证 - 使用 Macro F1 作为主要指标
         model.eval()
         with torch.no_grad():
             outputs = model(X_val_t)
-            f1_total = 0
+            
+            # 计算每个任务的 Macro F1（对所有类别一视同仁）
+            f1_per_task = {}
             for task in task_dims:
                 _, preds = torch.max(outputs[task], 1)
-                f1 = f1_score(y_val[task], preds.cpu().numpy(), average='macro')
-                f1_total += f1
+                preds_np = preds.cpu().numpy()
+                # 使用 zero_division=0 避免某个类不存在时的问题
+                f1 = f1_score(y_val[task], preds_np, average='macro', zero_division=0)
+                f1_per_task[task] = f1
             
-            val_f1 = f1_total / len(task_dims)
+            # 使用 Macro F1 平均值作为早停依据（各任务权重相同）
+            val_f1 = np.mean(list(f1_per_task.values()))
             
             # 早停
             if val_f1 > best_val_f1:
@@ -204,7 +262,8 @@ def train_multitask(X_train, X_val, X_test, y_train, y_val, y_test, task_dims,
                 no_improve += 1
         
         if (epoch + 1) % 20 == 0:
-            print(f"    Epoch {epoch+1}/{epochs}, Loss: {total_loss:.4f}, Val F1: {val_f1:.4f}")
+            f1_str = ", ".join([f"{t}={f:.4f}" for t, f in f1_per_task.items()])
+            print(f"    Epoch {epoch+1}/{epochs}, Loss: {total_loss:.4f}, Val Macro-F1: {val_f1:.4f} ({f1_str})")
         
         if no_improve >= patience:
             print(f"    Early stopping at epoch {epoch+1}")
@@ -263,13 +322,25 @@ def main():
         outputs = model(X_test_t)
     
     results = {}
+    print("\n    各任务详细评估结果:")
     for task in task_dims:
         _, preds = torch.max(outputs[task], 1)
         preds = preds.cpu().numpy()
+        
         acc = accuracy_score(y_test[task], preds)
-        f1 = f1_score(y_test[task], preds, average='macro')
-        results[task] = {'accuracy': acc, 'f1_macro': f1}
-        print(f"    {task}: Acc={acc:.4f}, F1={f1:.4f}")
+        f1_macro = f1_score(y_test[task], preds, average='macro', zero_division=0)
+        f1_weighted = f1_score(y_test[task], preds, average='weighted', zero_division=0)
+        
+        results[task] = {
+            'accuracy': acc, 
+            'f1_macro': f1_macro,
+            'f1_weighted': f1_weighted
+        }
+        print(f"      [{task}] Accuracy={acc:.4f}, F1-macro={f1_macro:.4f}, F1-weighted={f1_weighted:.4f}")
+    
+    # 总体 Macro F1
+    avg_f1_macro = np.mean([results[t]['f1_macro'] for t in task_dims])
+    print(f"\n    总体 Macro F1: {avg_f1_macro:.4f}")
     
     # 保存
     print("\n[4/4] 保存模型...")

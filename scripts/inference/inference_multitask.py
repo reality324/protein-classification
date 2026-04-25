@@ -109,23 +109,31 @@ def load_model(model_path):
     return model, scaler, task_dims, checkpoint.get('class_names', {})
 
 
-def predict(sequence, model, scaler, task_dims, class_names_map=None):
-    """单条预测"""
+def predict(sequence, model, scaler, task_dims, class_names_map=None, top_k=3):
+    """单条预测
+    
+    Args:
+        sequence: 蛋白质序列
+        model: 训练好的模型
+        scaler: 数据标准化器
+        task_dims: 任务维度字典
+        class_names_map: 类别名称映射
+        top_k: 显示前k个最可能的预测
+    """
     encoder = EncoderRegistry.get('esm2')
     features = encoder.encode(sequence).reshape(1, -1)
     features_scaled = scaler.transform(features)
     
+    # 类别名称 - 从模型加载或使用默认
+    EC_CLASSES = {0: "EC1", 1: "EC2", 2: "EC3", 3: "EC4", 4: "EC5", 5: "EC6", 6: "EC7"}
     LOCALIZATION_CLASSES = {
-        0: "Cytoplasm", 1: "ER", 2: "Golgi", 3: "Membrane",
-        4: "Mitochondria", 5: "Nucleus", 6: "Secreted"
+        0: "Cytoplasm", 1: "Endoplasmic reticulum", 2: "Membrane",
+        3: "Mitochondria", 4: "Nucleus", 5: "Other", 6: "Secreted", 7: "Unknown"
     }
     FUNCTION_CLASSES = {
-        0: "Cytoplasm", 1: "ER", 2: "Golgi", 3: "Membrane",
-        4: "Mitochondria", 5: "Nucleus", 6: "Secreted"
+        0: "Catalytic", 1: "Kinase", 2: "Other", 3: "Receptor", 4: "Transferase", 5: "Transporter"
     }
-    EC_CLASSES = {0: "EC1", 1: "EC2", 2: "EC3", 3: "EC4", 4: "EC5", 5: "EC6", 6: "EC7"}
     
-    # 使用模型提供的class_names
     class_names = {
         'ec': class_names_map.get('ec', EC_CLASSES) if class_names_map else EC_CLASSES,
         'localization': class_names_map.get('localization', LOCALIZATION_CLASSES) if class_names_map else LOCALIZATION_CLASSES,
@@ -142,10 +150,23 @@ def predict(sequence, model, scaler, task_dims, class_names_map=None):
             pred_class = int(np.argmax(probs))
             
             names = class_names.get(task, {})
+            
+            # 获取 Top-K 预测
+            top_indices = np.argsort(probs)[::-1][:top_k]
+            top_predictions = [
+                {
+                    "class": int(idx),
+                    "label": names.get(idx, f"Class {idx}"),
+                    "probability": float(probs[idx])
+                }
+                for idx in top_indices
+            ]
+            
             result[task] = {
                 "predicted_class": pred_class,
                 "predicted_label": names.get(pred_class, f"Class {pred_class}"),
                 "confidence": float(probs[pred_class]),
+                "top_predictions": top_predictions,
             }
     
     return result
@@ -178,6 +199,7 @@ def main():
     parser.add_argument("--sequence", "-s", type=str, help="单条蛋白质序列")
     parser.add_argument("--fasta", "-f", type=str, help="FASTA文件路径")
     parser.add_argument("--output", "-o", type=str, help="输出JSON文件路径")
+    parser.add_argument("--top-k", "-k", type=int, default=3, help="显示前k个预测结果 (默认3)")
     args = parser.parse_args()
     
     model_path = Path(args.model)
@@ -201,7 +223,7 @@ def main():
     results = []
     
     if args.sequence:
-        result = predict(args.sequence, model, scaler, task_dims, class_names)
+        result = predict(args.sequence, model, scaler, task_dims, class_names, top_k=args.top_k)
         result["sequence_length"] = len(args.sequence)
         results.append(result)
         
@@ -210,7 +232,13 @@ def main():
         print(f"\n预测结果:")
         for task in ['ec', 'localization', 'function']:
             if task in result:
-                print(f"  {task}: {result[task]['predicted_label']} ({result[task]['confidence']:.2%})")
+                task_info = result[task]
+                print(f"\n  [{task.upper()}]")
+                print(f"    最佳预测: {task_info['predicted_label']} ({task_info['confidence']:.2%})")
+                print(f"    Top-{args.top_k} 预测:")
+                for i, pred in enumerate(task_info['top_predictions']):
+                    marker = ">>>" if i == 0 else "   "
+                    print(f"      {marker} {i+1}. {pred['label']}: {pred['probability']:.2%}")
     
     elif args.fasta:
         headers, sequences = read_fasta(args.fasta)

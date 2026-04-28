@@ -29,7 +29,7 @@ numpy: >=1.20
 
 ```bash
 # 1. 克隆项目
-git clone https://github.com/yourusername/ProteinClassifier.git
+git clone https://github.com/reality324/protein-classifier.git
 cd ProteinClassifier
 
 # 2. 创建 conda 环境
@@ -58,8 +58,14 @@ pip install fair-esm
 ### 本地数据文件
 
 ```
-/home/tianwangcong/uniprot_sprot.dat.gz          # 原始 Swiss-Prot 数据 (~57万条)
-ProteinClassifier/data/datasets/train_subset.parquet  # 处理后的训练数据 (5000条)
+ProteinClassifier/data/datasets/
+├── protein_with_go.parquet      # 完整数据集 (~5万条)
+├── train_subset.parquet         # 训练子集 (5000条)
+├── uniprot_parsed.parquet      # 解析后的UniProt数据
+└── balanced_with_go/            # 平衡后的数据集
+    ├── train.parquet           # 训练集
+    ├── val.parquet             # 验证集
+    └── test.parquet            # 测试集
 ```
 
 ### 数据处理流程
@@ -67,7 +73,9 @@ ProteinClassifier/data/datasets/train_subset.parquet  # 处理后的训练数据
 原始 Swiss-Prot 数据经过以下处理得到训练数据集：
 1. 筛选同时具有 EC 编号、细胞定位、功能注释的蛋白质
 2. 过滤过短或过长的序列
-3. 随机抽取 5,000 条作为训练子集
+3. 使用 ESM2 模型提取蛋白质特征
+4. 按照 6:2:2 比例划分训练集、验证集、测试集
+5. 对不平衡类别进行平衡处理
 
 ### 数据标签
 
@@ -134,45 +142,41 @@ curl "https://rest.uniprot.org/uniprotkb/stream?query=ec:[1 TO 6]+AND+comment%28
 ```
 ProteinClassifier/
 ├── scripts/
-│   ├── train/                    # 训练脚本
-│   │   ├── train_rf.py           # RandomForest训练
-│   │   ├── train_xgb.py          # XGBoost训练
-│   │   ├── train_mlp.py          # MLP神经网络训练
-│   │   └── train_multitask.py    # 多任务神经网络训练
+│   ├── 01_process_data.py          # 数据处理脚本
+│   ├── train/                      # 训练脚本
+│   │   ├── train_rf_multitask.py       # RandomForest多任务训练
+│   │   ├── train_xgb_multitask.py      # XGBoost多任务训练
+│   │   ├── train_mlp_multitask.py      # MLP多任务训练
+│   │   ├── train_bnn_multitask.py      # BNN多任务训练
+│   │   └── train_multilabel_multitask.py # 多标签分类训练
 │   │
-│   ├── inference/                 # 推理脚本
-│   │   ├── inference_rf.py       # RF推理
-│   │   ├── inference_xgb.py      # XGBoost推理
-│   │   ├── inference_mlp.py      # MLP推理
-│   │   ├── inference_bnn.py      # BNN推理
-│   │   └── inference_multitask.py # 多任务推理
+│   ├── inference/                   # 推理脚本
+│   │   ├── inference_rf_multitask.py      # RF多任务推理
+│   │   ├── inference_xgb_multitask.py      # XGBoost多任务推理
+│   │   ├── inference_mlp_multitask.py      # MLP多任务推理
+│   │   ├── inference_bnn_multitask.py      # BNN多任务推理
+│   │   └── inference_multilabel.py         # 多标签分类推理
 │   │
-│   └── utils/                     # 工具脚本
-│       ├── compare.py             # 模型对比
-│       └── generate_esm2_features.py # ESM2特征生成
+│   ├── evaluate/                   # 评估脚本
+│   │   └── evaluate_all.py         # 评估所有模型
+│   │
+│   └── visualize/                  # 可视化脚本
+│       └── plot_results.py         # 绘制结果图表
 │
-├── models/                        # 模型文件
-│   ├── rf/                        # RandomForest模型
-│   │   ├── rf_esm2_model.pkl     # ESM2编码模型
-│   │   ├── rf_ctd_model.pkl       # CTD编码模型
-│   │   └── rf_onehot_model.pkl    # OneHot编码模型
-│   │
-│   ├── xgb/                       # XGBoost模型
-│   │   └── xgb_esm2_model.pkl
-│   ├── mlp/                       # MLP模型
-│   │   └── mlp_esm2_model.pt
-│   ├── bnn/                       # 贝叶斯神经网络模型
-│   │   └── bnn_esm2_model.pt
-│   └── multitask/                 # 多任务模型
-│       └── multitask_model.pt
+├── models/                         # 模型文件 (训练后生成)
+│   ├── rf_esm2_multitask/          # RandomForest模型
+│   ├── xgb_esm2_multitask/         # XGBoost模型
+│   ├── mlp_esm2_multitask/         # MLP模型
+│   ├── bnn_esm2_multitask/         # 贝叶斯神经网络模型
+│   └── multilabel_esm2_multitask/  # 多标签分类模型
 │
 ├── src/
-│   ├── encodings/                 # 特征编码
+│   ├── encodings/                  # 特征编码
 │   │   ├── onehot.py
 │   │   ├── ctd.py
 │   │   └── esm2.py
 │   │
-│   ├── algorithms/                # 算法实现
+│   ├── algorithms/                 # 算法实现
 │   │   ├── rf.py
 │   │   ├── xgb.py
 │   │   ├── mlp.py
@@ -185,6 +189,9 @@ ProteinClassifier/
 │
 └── data/
     ├── datasets/                   # 数据集
+    │   ├── protein_with_go.parquet    # 完整数据集
+    │   ├── train_subset.parquet       # 训练子集
+    │   └── balanced_with_go/          # 平衡后的数据集
     ├── processed/                  # 处理后的数据
     └── raw/                        # 原始数据
 ```
@@ -194,88 +201,99 @@ ProteinClassifier/
 ### 训练模型
 
 ```bash
-# RandomForest (支持 onehot/ctd/esm2)
-python scripts/train/train_rf.py --encoding esm2
+# RandomForest 多任务训练
+python scripts/train/train_rf_multitask.py
 
-# XGBoost (支持 onehot/ctd/esm2)
-python scripts/train/train_xgb.py --encoding esm2
+# XGBoost 多任务训练
+python scripts/train/train_xgb_multitask.py
 
-# MLP神经网络 (支持 onehot/ctd/esm2)
-python scripts/train/train_mlp.py --encoding esm2
+# MLP 多任务训练
+python scripts/train/train_mlp_multitask.py
 
-# 多任务模型 (同时预测EC主类+细胞定位+分子功能)
-python scripts/train/train_multitask.py
+# BNN 多任务训练
+python scripts/train/train_bnn_multitask.py
+
+# 多标签分类训练
+python scripts/train/train_multilabel_multitask.py
 ```
-
-> **提示**: 运行 `python scripts/train/train_rf.py -h` 可查看所有支持的编码方式
 
 ### 模型推理
 
 ```bash
 # RF模型推理
-python scripts/inference/inference_rf.py \
-    --model models/rf/rf_esm2_model.pkl \
+python scripts/inference/inference_rf_multitask.py \
+    --model models/rf_esm2_multitask/ \
     --sequence "YOUR_PROTEIN_SEQUENCE"
 
 # XGBoost模型推理
-python scripts/inference/inference_xgb.py \
-    --model models/xgb/xgb_esm2_model.pkl \
+python scripts/inference/inference_xgb_multitask.py \
+    --model models/xgb_esm2_multitask/ \
     --sequence "YOUR_PROTEIN_SEQUENCE"
 
 # MLP模型推理
-python scripts/inference/inference_mlp.py \
-    --model models/mlp/mlp_esm2_model.pt \
+python scripts/inference/inference_mlp_multitask.py \
+    --model models/mlp_esm2_multitask/ \
     --sequence "YOUR_PROTEIN_SEQUENCE"
 
 # BNN模型推理 (带不确定性估计)
-python scripts/inference/inference_bnn.py \
-    --model models/bnn/bnn_esm2_model.pt \
+python scripts/inference/inference_bnn_multitask.py \
+    --model models/bnn_esm2_multitask/ \
     --sequence "YOUR_PROTEIN_SEQUENCE"
 
-# 多任务模型推理 (同时预测EC主类+细胞定位+分子功能)
-python scripts/inference/inference_multitask.py \
-    --model models/multitask/multitask_model.pt \
+# 多标签分类推理
+python scripts/inference/inference_multilabel.py \
+    --model models/multilabel_esm2_multitask/ \
     --sequence "YOUR_PROTEIN_SEQUENCE"
 ```
 
 ### 批量推理 (FASTA文件)
 
 ```bash
-python scripts/inference/inference_rf.py \
-    --model models/rf/rf_esm2_model.pkl \
+python scripts/inference/inference_rf_multitask.py \
+    --model models/rf_esm2_multitask/ \
     --fasta proteins.fasta \
     --output results.json
+```
+
+### 模型评估
+
+```bash
+# 评估所有模型
+python scripts/evaluate/evaluate_all.py
+
+# 绘制结果可视化
+python scripts/visualize/plot_results.py
 ```
 
 ## 支持的算法
 
 | 算法 | 训练脚本 | 推理脚本 | 模型格式 | 特点 |
 |------|---------|---------|----------|------|
-| RandomForest | `train_rf.py` | `inference_rf.py` | `.pkl` | 传统机器学习，可解释性强 |
-| XGBoost | `train_xgb.py` | `inference_xgb.py` | `.pkl` | 梯度提升，高精度 |
-| MLP | `train_mlp.py` | `inference_mlp.py` | `.pt` | 神经网络，全连接层 |
-| BNN | `train_bnn.py` | `inference_bnn.py` | `.pt` | 贝叶斯神经网络，可输出预测不确定性 |
-| Multitask | `train_multitask.py` | `inference_multitask.py` | `.pt` | 多任务学习，同时预测EC+定位+功能 |
+| RandomForest | `train_rf_multitask.py` | `inference_rf_multitask.py` | 目录 | 传统机器学习，可解释性强，多任务预测 |
+| XGBoost | `train_xgb_multitask.py` | `inference_xgb_multitask.py` | 目录 | 梯度提升，高精度，多任务预测 |
+| MLP | `train_mlp_multitask.py` | `inference_mlp_multitask.py` | 目录 | 神经网络，全连接层，多任务预测 |
+| BNN | `train_bnn_multitask.py` | `inference_bnn_multitask.py` | 目录 | 贝叶斯神经网络，可输出预测不确定性 |
+| Multilabel | `train_multilabel_multitask.py` | `inference_multilabel.py` | 目录 | 多标签分类，支持部分标签缺失 |
 
-## 支持的编码方式
+## 特征编码方式
 
 | 编码 | 维度 | 说明 | 支持的算法 |
 |------|------|------|-----------|
-| `onehot` | 20维 | 20种氨基酸的独热编码 | rf, xgb, mlp, bnn |
-| `ctd` | 147维 | 氨基酸组成、转换、分布特征 | rf, xgb, mlp, bnn |
-| `esm2` | 320维 | ESM2蛋白质语言模型特征 | rf, xgb, mlp, bnn |
+| `esm2` | 1280维 | ESM2蛋白质语言模型特征 | RF, XGBoost, MLP, BNN, Multilabel |
+
+> **注意**: 当前版本统一使用 ESM2 特征进行蛋白质编码，不再支持 OneHot 和 CTD 编码。
 
 ## 支持的分类任务
 
-| 算法 | 预测任务 | 说明 |
-|------|----------|------|
-| RandomForest | EC主类 | 7类 (EC1-EC7) |
-| XGBoost | EC主类 | 7类 (EC1-EC7) |
-| MLP | EC主类 | 7类 (EC1-EC7) |
-| BNN | EC主类 | 7类 (EC1-EC7)，可输出预测不确定性 |
-| **Multitask** | **3个任务** | EC主类 + 细胞定位 + 分子功能 |
+| 算法 | 预测任务 | 类别数 | 说明 |
+|------|----------|--------|------|
+| RandomForest | EC主类 + 细胞定位 + 分子功能 | 3任务 | 多任务学习，同时预测3个指标 |
+| XGBoost | EC主类 + 细胞定位 + 分子功能 | 3任务 | 多任务学习，同时预测3个指标 |
+| MLP | EC主类 + 细胞定位 + 分子功能 | 3任务 | 多任务学习，同时预测3个指标 |
+| BNN | EC主类 + 细胞定位 + 分子功能 | 3任务 | 多任务学习，可输出预测不确定性 |
+| Multilabel | EC主类 + 细胞定位 + 分子功能 | 3任务 | 多标签分类，支持部分标签缺失 |
 
-> **注意**: 只有 `multitask` 模型支持同时预测 EC主类、细胞定位和分子功能三个分类指标。其他算法 (rf, xgb, mlp, bnn) 仅预测 EC 主类。
+> **说明**: 所有模型都支持同时预测 EC主类、细胞定位和分子功能三个分类指标。
 
 ## 模型性能 (Multitask)
 
@@ -315,17 +333,24 @@ python scripts/inference/inference_rf.py \
 ## 模型配置
 
 每个模型目录下包含:
-- `*_model.*`: 模型文件
-- `*_config.json`: 模型配置
+- `results.json`: 训练结果和评估指标
+- 模型文件 (训练后生成)
 
 ```json
 {
-  "algorithm": "RandomForest",
+  "model_type": "RandomForest",
   "encoding": "esm2",
-  "input_dim": 320,
-  "n_classes": 7,
-  "test_accuracy": 0.85,
-  "test_f1_macro": 0.82
+  "input_dim": 1280,
+  "tasks": {
+    "ec": {"n_classes": 7, "classes": ["EC1", "EC2", "EC3", "EC4", "EC5", "EC6", "EC7"]},
+    "localization": {"n_classes": 8},
+    "function": {"n_classes": 6}
+  },
+  "test_results": {
+    "ec": {"accuracy": 0.95, "f1_macro": 0.90},
+    "localization": {"accuracy": 0.95, "f1_macro": 0.45},
+    "function": {"accuracy": 0.98, "f1_macro": 0.82}
+  }
 }
 ```
 
@@ -399,13 +424,12 @@ python scripts/inference/inference_rf.py \
 
 ## 常见问题
 
-### Q: ESM2 特征如何生成？
+### Q: 如何处理新的数据？
 
 ```bash
-python scripts/utils/generate_esm2_features.py
+# 使用数据处理脚本
+python scripts/01_process_data.py --input your_data.parquet --output processed/
 ```
-
-> **注意**: ESM2 模型较大，首次运行会自动下载 (~500MB)
 
 ### Q: 如何添加新的编码方式？
 
@@ -416,10 +440,10 @@ python scripts/utils/generate_esm2_features.py
 
 ### Q: 支持 GPU 训练吗？
 
-是的，MLP、BNN、Multitask 模型支持 GPU 训练：
+是的，MLP、BNN 模型支持 GPU 训练：
 
 ```bash
-python scripts/train/train_mlp.py --encoding esm2 --device cuda
+python scripts/train/train_mlp_multitask.py --device cuda
 ```
 
 ## 文档目录

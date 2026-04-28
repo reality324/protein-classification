@@ -1,0 +1,296 @@
+#!/usr/bin/env python3
+"""
+蛋白质多任务分类器训练脚本
+- 编码: ESM2 (蛋白质语言模型)
+- 算法: 贝叶斯神经网络 (BNN) + MC Dropout
+- 任务: EC主类 + 细胞定位 + 分子功能
+"""
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, TensorDataset
+from sklearn.preprocessing import LabelEncoder
+from pathlib import Path
+import json
+
+from src.encodings.esm2 import ESM2Encoder
+
+
+class MultiTaskBNN(nn.Module):
+    """多任务 BNN (MC Dropout)"""
+
+    def __init__(self, input_dim, ec_classes, loc_classes, func_classes, hidden=[512, 256], dropout=0.3):
+        super().__init__()
+
+        layers = []
+        prev = input_dim
+        for h in hidden:
+            layers.extend([
+                nn.Linear(prev, h),
+                nn.BatchNorm1d(h),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+            ])
+            prev = h
+
+        self.encoder = nn.Sequential(*layers)
+        self.ec_head = nn.Linear(prev, ec_classes)
+        self.loc_head = nn.Linear(prev, loc_classes)
+        self.func_head = nn.Linear(prev, func_classes)
+
+    def forward(self, x):
+        h = self.encoder(x)
+        return self.ec_head(h), self.loc_head(h), self.func_head(h)
+
+
+def load_data(data_dir):
+    """加载数据集"""
+    data_dir = Path(data_dir)
+
+    train_df = pd.read_parquet(data_dir / 'train.parquet')
+    val_df = pd.read_parquet(data_dir / 'val.parquet')
+    test_df = pd.read_parquet(data_dir / 'test.parquet')
+
+    return train_df, val_df, test_df
+
+
+def encode_labels(train_df, val_df, test_df):
+    """编码标签"""
+    ec_enc = LabelEncoder()
+    loc_enc = LabelEncoder()
+    func_enc = LabelEncoder()
+
+    all_funcs = sorted(set(f for fs in train_df['functions'] for f in fs))
+
+    ec_enc.fit(train_df['ec_main_class'])
+    loc_enc.fit(train_df['location_normalized'])
+    func_enc.fit(all_funcs)
+
+    def one_hot_multi_label(funcs_list, encoder):
+        arr = np.zeros((len(funcs_list), len(encoder.classes_)), dtype=np.float32)
+        for i, fs in enumerate(funcs_list):
+            for f in fs:
+                if f in encoder.classes_:
+                    arr[i, np.where(encoder.classes_ == f)[0][0]] = 1
+        return arr
+
+    y_ec_train = ec_enc.transform(train_df['ec_main_class'])
+    y_ec_val = ec_enc.transform(val_df['ec_main_class'])
+    y_ec_test = ec_enc.transform(test_df['ec_main_class'])
+
+    y_loc_train = loc_enc.transform(train_df['location_normalized'])
+    y_loc_val = loc_enc.transform(val_df['location_normalized'])
+    y_loc_test = loc_enc.transform(test_df['location_normalized'])
+
+    y_func_train = one_hot_multi_label(train_df['functions'], func_enc)
+    y_func_val = one_hot_multi_label(val_df['functions'], func_enc)
+    y_func_test = one_hot_multi_label(test_df['functions'], func_enc)
+    y_func_train_single = y_func_train.argmax(axis=1)
+    y_func_val_single = y_func_val.argmax(axis=1)
+    y_func_test_single = y_func_test.argmax(axis=1)
+
+    return {
+        'ec': (ec_enc, y_ec_train, y_ec_val, y_ec_test),
+        'loc': (loc_enc, y_loc_train, y_loc_val, y_loc_test),
+        'func': (func_enc, y_func_train_single, y_func_val_single, y_func_test_single),
+    }
+
+
+def train(model, X_train, y_ec_train, y_loc_train, y_func_train_single,
+          X_val, y_ec_val, y_loc_val, y_func_val_single,
+          device, epochs=100, batch_size=64, patience=15):
+    """训练"""
+    X_train_t = torch.FloatTensor(X_train).to(device)
+    X_val_t = torch.FloatTensor(X_val).to(device)
+
+    train_ds = TensorDataset(
+        X_train_t,
+        torch.LongTensor(y_ec_train).to(device),
+        torch.LongTensor(y_loc_train).to(device),
+        torch.LongTensor(y_func_train_single).to(device),
+    )
+    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
+
+    optimizer = optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-4)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5, factor=0.5)
+    criterion = nn.CrossEntropyLoss()
+
+    best_val_loss = float('inf')
+    best_state = None
+    patience_cnt = 0
+
+    for epoch in range(epochs):
+        model.train()
+        train_loss = 0
+        for X, y_ec, y_loc, y_func in train_loader:
+            optimizer.zero_grad()
+            ec_out, loc_out, func_out = model(X)
+            loss = criterion(ec_out, y_ec) + criterion(loc_out, y_loc) + criterion(func_out, y_func)
+            loss.backward()
+            optimizer.step()
+            train_loss += loss.item()
+
+        model.eval()
+        with torch.no_grad():
+            ec_out, loc_out, func_out = model(X_val_t)
+            val_loss = criterion(ec_out, torch.LongTensor(y_ec_val).to(device))
+            val_loss += criterion(loc_out, torch.LongTensor(y_loc_val).to(device))
+            val_loss += criterion(func_out, torch.LongTensor(y_func_val_single).to(device))
+
+        scheduler.step(val_loss)
+
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+            patience_cnt = 0
+        else:
+            patience_cnt += 1
+
+        if (epoch + 1) % 10 == 0:
+            model.eval()
+            with torch.no_grad():
+                ec_acc = (ec_out.argmax(1) == torch.LongTensor(y_ec_val).to(device)).float().mean()
+                loc_acc = (loc_out.argmax(1) == torch.LongTensor(y_loc_val).to(device)).float().mean()
+            print(f"Epoch {epoch+1}: loss={train_loss/len(train_loader):.4f}, "
+                  f"val={val_loss.item():.4f}, ec={ec_acc:.3f}, loc={loc_acc:.3f}")
+
+        if patience_cnt >= patience:
+            print(f"早停于 epoch {epoch+1}")
+            break
+
+    model.load_state_dict(best_state)
+    return model
+
+
+def evaluate(model, X_test, y_ec_test, y_loc_test, y_func_test_single, device, n_samples=30):
+    """MC Dropout 评估"""
+    model.eval()
+
+    # 启用 dropout
+    for m in model.modules():
+        if isinstance(m, nn.Dropout):
+            m.train()
+
+    X_test_t = torch.FloatTensor(X_test).to(device)
+
+    ec_preds, loc_preds, func_preds = [], [], []
+
+    with torch.no_grad():
+        for _ in range(n_samples):
+            ec_out, loc_out, func_out = model(X_test_t)
+            ec_preds.append(torch.softmax(ec_out, dim=1))
+            loc_preds.append(torch.softmax(loc_out, dim=1))
+            func_preds.append(torch.softmax(func_out, dim=1))
+
+    ec_mean = torch.stack(ec_preds).mean(0)
+    loc_mean = torch.stack(loc_preds).mean(0)
+    func_mean = torch.stack(func_preds).mean(0)
+
+    ec_acc = (ec_mean.argmax(1).cpu() == torch.LongTensor(y_ec_test)).float().mean().item()
+    loc_acc = (loc_mean.argmax(1).cpu() == torch.LongTensor(y_loc_test)).float().mean().item()
+    func_acc = (func_mean.argmax(1).cpu() == torch.LongTensor(y_func_test_single)).float().mean().item()
+
+    return ec_acc, loc_acc, func_acc
+
+
+def main():
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Device: {device}")
+
+    DATA_DIR = Path('data/datasets/balanced_with_go')
+    MODEL_DIR = Path('models/bnn_esm2_multitask')
+    MODEL_DIR.mkdir(parents=True, exist_ok=True)
+
+    # 1. 加载数据
+    print("\n[1/5] 加载数据...")
+    train_df, val_df, test_df = load_data(DATA_DIR)
+    print(f"Train: {len(train_df)}, Val: {len(val_df)}, Test: {len(test_df)}")
+
+    # 2. 编码标签
+    print("\n[2/5] 编码标签...")
+    labels = encode_labels(train_df, val_df, test_df)
+    ec_enc, y_ec_train, y_ec_val, y_ec_test = labels['ec']
+    loc_enc, y_loc_train, y_loc_val, y_loc_test = labels['loc']
+    func_enc, y_func_train, y_func_val, y_func_test = labels['func']
+
+    print(f"EC: {len(ec_enc.classes_)} 类, Loc: {len(loc_enc.classes_)} 类, Func: {len(func_enc.classes_)} 类")
+
+    # 3. ESM2 特征
+    print("\n[3/5] 获取 ESM2 特征...")
+
+    feat_cache = DATA_DIR / 'esm2_features.npy'
+
+    if feat_cache.exists():
+        print("加载缓存的 ESM2 特征...")
+        all_features = np.load(feat_cache)
+
+        n_train = len(train_df)
+        n_val = len(val_df)
+        X_train = all_features[:n_train]
+        X_val = all_features[n_train:n_train+n_val]
+        X_test = all_features[n_train+n_val:]
+    else:
+        encoder = ESM2Encoder(pooling='mean', device=device)
+        X_train = encoder.encode_batch(train_df['sequence'].tolist())
+        X_val = encoder.encode_batch(val_df['sequence'].tolist())
+        X_test = encoder.encode_batch(test_df['sequence'].tolist())
+
+    print(f"特征维度: {X_train.shape[1]}")
+
+    # 4. 训练
+    print("\n[4/5] 训练...")
+    model = MultiTaskBNN(
+        input_dim=X_train.shape[1],
+        ec_classes=len(ec_enc.classes_),
+        loc_classes=len(loc_enc.classes_),
+        func_classes=len(func_enc.classes_),
+    ).to(device)
+
+    print(f"参数量: {sum(p.numel() for p in model.parameters()):,}")
+
+    model = train(
+        model, X_train, y_ec_train, y_loc_train, y_func_train,
+        X_val, y_ec_val, y_loc_val, y_func_val,
+        device
+    )
+
+    # 5. 评估
+    print("\n[5/5] 评估...")
+    ec_acc, loc_acc, func_acc = evaluate(
+        model, X_test, y_ec_test, y_loc_test, y_func_test,
+        device
+    )
+
+    print(f"\n测试结果:")
+    print(f"  EC 准确率:   {ec_acc:.4f}")
+    print(f"  定位准确率:  {loc_acc:.4f}")
+    print(f"  功能准确率:  {func_acc:.4f}")
+
+    # 保存
+    torch.save({
+        'model_state_dict': model.state_dict(),
+        'ec_classes': list(ec_enc.classes_),
+        'loc_classes': list(loc_enc.classes_),
+        'func_classes': list(func_enc.classes_),
+        'input_dim': X_train.shape[1],
+    }, MODEL_DIR / 'model.pt')
+
+    results = {
+        'ec_accuracy': ec_acc,
+        'loc_accuracy': loc_acc,
+        'func_accuracy': func_acc,
+    }
+    with open(MODEL_DIR / 'results.json', 'w') as f:
+        json.dump(results, f, indent=2)
+
+    print(f"\n模型保存到: {MODEL_DIR}")
+
+
+if __name__ == '__main__':
+    main()

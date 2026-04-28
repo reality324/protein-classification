@@ -1,8 +1,0 @@
-{
-  "algorithm": "RandomForest",
-  "encoding": "ctd",
-  "input_dim": 147,
-  "n_classes": 7,
-  "n_estimators": 200,
-  "max_depth": 15
-}

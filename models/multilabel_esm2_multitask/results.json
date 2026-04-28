@@ -1,0 +1,12 @@
+{
+  "ec_accuracy": 0.8799298860648553,
+  "loc_accuracy": 0.9141104294478528,
+  "func_multilabel": {
+    "exact_match_ratio": 0.5249780893952674,
+    "hamming_loss": 0.029047201702766996,
+    "subset_accuracy": 0.5249780893952674,
+    "mean_precision": 0.5794860635357244,
+    "mean_recall": 0.3492321278066998,
+    "mean_f1": 0.43581605423557856
+  }
+}

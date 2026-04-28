@@ -1,8 +1,0 @@
-{
-  "algorithm": "RandomForest",
-  "encoding": "onehot",
-  "input_dim": 20,
-  "n_classes": 7,
-  "n_estimators": 200,
-  "max_depth": 15
-}

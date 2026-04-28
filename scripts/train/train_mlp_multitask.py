@@ -19,7 +19,7 @@ from sklearn.preprocessing import LabelEncoder
 from pathlib import Path
 import json
 
-from src.encodings.esm2 import ESM2Encoder
+from src.encodings import EncoderRegistry
 
 
 class MultiTaskMLP(nn.Module):
@@ -112,7 +112,9 @@ def main():
     parser = argparse.ArgumentParser(description='MLP 多任务分类器训练')
     parser.add_argument('--data', type=str, default='data/datasets/balanced_with_go',
                         help='数据集目录')
-    parser.add_argument('--output', type=str, default='models/mlp_esm2_multitask',
+    parser.add_argument('--encoding', type=str, default='esm2', choices=['onehot', 'ctd', 'esm2'],
+                        help='特征编码方式: onehot (20维), ctd (147维), esm2 (1280维)')
+    parser.add_argument('--output', type=str, default=None,
                         help='输出目录')
     parser.add_argument('--epochs', type=int, default=100, help='训练轮数')
     parser.add_argument('--batch_size', type=int, default=64, help='批次大小')
@@ -122,6 +124,9 @@ def main():
     parser.add_argument('--patience', type=int, default=15, help='早停耐心值')
     parser.add_argument('--device', type=str, default='auto', help='设备 (cuda/cpu)')
     args = parser.parse_args()
+
+    if args.output is None:
+        args.output = f'models/mlp_{args.encoding}_multitask'
 
     # 设备
     if args.device == 'auto':
@@ -148,12 +153,13 @@ def main():
 
     print(f"EC: {len(ec_enc.classes_)} 类, Loc: {len(loc_enc.classes_)} 类, Func: {len(func_enc.classes_)} 类")
 
-    # 3. ESM2 特征
-    print("\n[3/5] 获取 ESM2 特征...")
-    feat_cache = Path(args.data) / 'esm2_features.npy'
+    # 3. 获取特征
+    print("\n[3/5] 获取特征...")
+    print(f"使用编码器: {args.encoding}")
+    feat_cache = Path(args.data) / f'{args.encoding}_features.npy'
 
     if feat_cache.exists():
-        print("加载缓存的 ESM2 特征...")
+        print("加载缓存特征...")
         all_features = np.load(feat_cache)
 
         n_train = len(train_df)
@@ -162,10 +168,14 @@ def main():
         X_val = all_features[n_train:n_train+n_val]
         X_test = all_features[n_train+n_val:]
     else:
-        encoder = ESM2Encoder(pooling='mean', device=device)
+        print(f"实时生成 {args.encoding} 特征...")
+        encoder = EncoderRegistry.get(args.encoding)
         X_train = encoder.encode_batch(train_df['sequence'].tolist())
         X_val = encoder.encode_batch(val_df['sequence'].tolist())
         X_test = encoder.encode_batch(test_df['sequence'].tolist())
+
+        np.save(feat_cache, np.vstack([X_train, X_val, X_test]))
+        print(f"特征已缓存到: {feat_cache}")
 
     print(f"特征维度: {X_train.shape[1]}")
 

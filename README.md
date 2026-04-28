@@ -201,21 +201,23 @@ ProteinClassifier/
 ### 训练模型
 
 ```bash
-# RandomForest 多任务训练
-python scripts/train/train_rf_multitask.py
+# RandomForest 多任务训练 (支持 onehot/ctd/esm2)
+python scripts/train/train_rf_multitask.py --encoding esm2
 
 # XGBoost 多任务训练
-python scripts/train/train_xgb_multitask.py
+python scripts/train/train_xgb_multitask.py --encoding esm2
 
 # MLP 多任务训练
-python scripts/train/train_mlp_multitask.py
+python scripts/train/train_mlp_multitask.py --encoding esm2
 
 # BNN 多任务训练
-python scripts/train/train_bnn_multitask.py
+python scripts/train/train_bnn_multitask.py --encoding esm2
 
 # 多标签分类训练
-python scripts/train/train_multilabel_multitask.py
+python scripts/train/train_multilabel_multitask.py --encoding esm2
 ```
+
+> **提示**: 运行 `python scripts/train/train_rf_multitask.py -h` 可查看所有支持的编码方式 (`--encoding`)
 
 ### 模型推理
 
@@ -275,13 +277,13 @@ python scripts/visualize/plot_results.py
 | BNN | `train_bnn_multitask.py` | `inference_bnn_multitask.py` | 目录 | 贝叶斯神经网络，可输出预测不确定性 |
 | Multilabel | `train_multilabel_multitask.py` | `inference_multilabel.py` | 目录 | 多标签分类，支持部分标签缺失 |
 
-## 特征编码方式
+## 支持的编码方式
 
 | 编码 | 维度 | 说明 | 支持的算法 |
 |------|------|------|-----------|
-| `esm2` | 1280维 | ESM2蛋白质语言模型特征 | RF, XGBoost, MLP, BNN, Multilabel |
-
-> **注意**: 当前版本统一使用 ESM2 特征进行蛋白质编码，不再支持 OneHot 和 CTD 编码。
+| `onehot` | 20维 | 20种氨基酸的组成比例编码 | RF, XGBoost, MLP, BNN, Multilabel |
+| `ctd` | 147维 | 氨基酸物化性质编码 (Composition-Transition-Distribution) | RF, XGBoost, MLP, BNN, Multilabel |
+| `esm2` | 1280维 | ESM2 蛋白质语言模型特征 | RF, XGBoost, MLP, BNN, Multilabel |
 
 ## 支持的分类任务
 

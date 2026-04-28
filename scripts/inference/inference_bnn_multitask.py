@@ -13,7 +13,7 @@ import torch.nn as nn
 import numpy as np
 from pathlib import Path
 
-from src.encodings.esm2 import ESM2Encoder
+from src.encodings import EncoderRegistry
 
 
 class MultiTaskBNN(nn.Module):
@@ -43,10 +43,10 @@ class MultiTaskBNN(nn.Module):
         return self.ec_head(h), self.loc_head(h), self.func_head(h)
 
 
-def predict(sequence, model, class_labels, esm2_encoder, device, n_samples=30):
+def predict(sequence, model, class_labels, encoder, device, n_samples=30):
     """带 MC Dropout 的预测"""
     # 编码
-    features = esm2_encoder.encode(sequence).reshape(1, -1)
+    features = encoder.encode(sequence).reshape(1, -1)
     X = torch.FloatTensor(features).to(device)
 
     # 启用 dropout
@@ -103,8 +103,9 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description='蛋白质多任务分类推理')
-    parser.add_argument('--model', type=str, default='models/bnn_esm2_multitask/model.pt',
-                        help='模型路径')
+    parser.add_argument('--model', type=str, default=None)
+    parser.add_argument('--encoding', type=str, default='esm2', choices=['onehot', 'ctd', 'esm2'],
+                        help='特征编码方式')
     parser.add_argument('--sequence', type=str, default=None,
                         help='蛋白质序列')
     parser.add_argument('--fasta', type=str, default=None,
@@ -112,6 +113,9 @@ def main():
     parser.add_argument('--output', type=str, default=None,
                         help='输出 JSON 文件')
     args = parser.parse_args()
+
+    if args.model is None:
+        args.model = f'models/bnn_{args.encoding}_multitask/model.pt'
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Device: {device}")
@@ -140,8 +144,9 @@ def main():
         'func_classes': func_classes,
     }
 
-    # ESM2 编码器
-    esm2 = ESM2Encoder(pooling='mean', device=device)
+    # 编码器
+    print(f"使用编码器: {args.encoding}")
+    encoder = EncoderRegistry.get(args.encoding)
 
     results = {}
 
@@ -174,7 +179,7 @@ def main():
 
         for name, seq in zip(names, sequences):
             print(f"\n序列: {name}")
-            result = predict(seq, model, class_labels, esm2, device)
+            result = predict(seq, model, class_labels, encoder, device)
             results[name] = result
 
             print(f"  EC: {result['ec']['class']} (置信度: {result['ec']['confidence']:.3f})")
@@ -185,7 +190,7 @@ def main():
         # 单条推理
         print(f"\n序列: {args.sequence[:50]}...")
 
-        result = predict(args.sequence, model, class_labels, esm2, device)
+        result = predict(args.sequence, model, class_labels, encoder, device)
 
         print(f"\n预测结果:")
         print(f"  EC 主类: {result['ec']['class']}")

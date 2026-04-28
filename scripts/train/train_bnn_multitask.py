@@ -19,7 +19,7 @@ from sklearn.preprocessing import LabelEncoder
 from pathlib import Path
 import json
 
-from src.encodings.esm2 import ESM2Encoder
+from src.encodings import EncoderRegistry
 
 
 class MultiTaskBNN(nn.Module):
@@ -200,11 +200,29 @@ def evaluate(model, X_test, y_ec_test, y_loc_test, y_func_test_single, device, n
 
 
 def main():
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    import argparse
+    parser = argparse.ArgumentParser(description='BNN 多任务分类器训练')
+    parser.add_argument('--data', type=str, default='data/datasets/balanced_with_go')
+    parser.add_argument('--encoding', type=str, default='esm2', choices=['onehot', 'ctd', 'esm2'],
+                        help='特征编码方式: onehot (20维), ctd (147维), esm2 (1280维)')
+    parser.add_argument('--output', type=str, default=None)
+    parser.add_argument('--epochs', type=int, default=100)
+    parser.add_argument('--batch_size', type=int, default=64)
+    parser.add_argument('--patience', type=int, default=15)
+    parser.add_argument('--device', type=str, default='auto')
+    args = parser.parse_args()
+
+    if args.device == 'auto':
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    else:
+        device = torch.device(args.device)
     print(f"Device: {device}")
 
-    DATA_DIR = Path('data/datasets/balanced_with_go')
-    MODEL_DIR = Path('models/bnn_esm2_multitask')
+    if args.output is None:
+        args.output = f'models/bnn_{args.encoding}_multitask'
+
+    DATA_DIR = Path(args.data)
+    MODEL_DIR = Path(args.output)
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
     # 1. 加载数据
@@ -221,13 +239,14 @@ def main():
 
     print(f"EC: {len(ec_enc.classes_)} 类, Loc: {len(loc_enc.classes_)} 类, Func: {len(func_enc.classes_)} 类")
 
-    # 3. ESM2 特征
-    print("\n[3/5] 获取 ESM2 特征...")
+    # 3. 获取特征
+    print("\n[3/5] 获取特征...")
+    print(f"使用编码器: {args.encoding}")
 
-    feat_cache = DATA_DIR / 'esm2_features.npy'
+    feat_cache = DATA_DIR / f'{args.encoding}_features.npy'
 
     if feat_cache.exists():
-        print("加载缓存的 ESM2 特征...")
+        print("加载缓存特征...")
         all_features = np.load(feat_cache)
 
         n_train = len(train_df)
@@ -236,10 +255,14 @@ def main():
         X_val = all_features[n_train:n_train+n_val]
         X_test = all_features[n_train+n_val:]
     else:
-        encoder = ESM2Encoder(pooling='mean', device=device)
+        print(f"实时生成 {args.encoding} 特征...")
+        encoder = EncoderRegistry.get(args.encoding)
         X_train = encoder.encode_batch(train_df['sequence'].tolist())
         X_val = encoder.encode_batch(val_df['sequence'].tolist())
         X_test = encoder.encode_batch(test_df['sequence'].tolist())
+
+        np.save(feat_cache, np.vstack([X_train, X_val, X_test]))
+        print(f"特征已缓存到: {feat_cache}")
 
     print(f"特征维度: {X_train.shape[1]}")
 

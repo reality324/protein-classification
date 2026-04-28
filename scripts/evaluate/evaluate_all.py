@@ -16,7 +16,7 @@ from pathlib import Path
 from sklearn.metrics import (accuracy_score, precision_score, recall_score,
                             f1_score, classification_report, confusion_matrix)
 
-from src.encodings.esm2 import ESM2Encoder
+from src.encodings import EncoderRegistry
 
 
 def load_test_data(data_dir):
@@ -26,7 +26,7 @@ def load_test_data(data_dir):
     return test_df
 
 
-def get_predictions_bnn(model_path, test_df, device='cpu'):
+def get_predictions_bnn(model_path, test_df, encoding, device='cpu'):
     """BNN 模型预测"""
     checkpoint = torch.load(model_path, map_location=device, weights_only=False)
 
@@ -43,7 +43,7 @@ def get_predictions_bnn(model_path, test_df, device='cpu'):
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
 
-    encoder = ESM2Encoder(pooling='mean', device=device)
+    encoder = EncoderRegistry.get(encoding)
     features = encoder.encode_batch(test_df['sequence'].tolist())
 
     with torch.no_grad():
@@ -56,7 +56,7 @@ def get_predictions_bnn(model_path, test_df, device='cpu'):
     return ec_pred, loc_pred, func_pred, checkpoint
 
 
-def get_predictions_mlp(model_path, test_df, device='cpu'):
+def get_predictions_mlp(model_path, test_df, encoding, device='cpu'):
     """MLP 模型预测"""
     checkpoint = torch.load(model_path, map_location=device, weights_only=False)
 
@@ -73,7 +73,7 @@ def get_predictions_mlp(model_path, test_df, device='cpu'):
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
 
-    encoder = ESM2Encoder(pooling='mean', device=device)
+    encoder = EncoderRegistry.get(encoding)
     features = encoder.encode_batch(test_df['sequence'].tolist())
 
     with torch.no_grad():
@@ -86,12 +86,12 @@ def get_predictions_mlp(model_path, test_df, device='cpu'):
     return ec_pred, loc_pred, func_pred, checkpoint
 
 
-def get_predictions_rf(model_path, test_df):
+def get_predictions_rf(model_path, test_df, encoding):
     """RandomForest 模型预测"""
     with open(model_path, 'rb') as f:
         data = pickle.load(f)
 
-    encoder = ESM2Encoder(pooling='mean', device='cpu')
+    encoder = EncoderRegistry.get(encoding)
     features = encoder.encode_batch(test_df['sequence'].tolist())
 
     ec_pred = data['ec_clf'].predict(features)
@@ -101,12 +101,12 @@ def get_predictions_rf(model_path, test_df):
     return ec_pred, loc_pred, func_pred, data
 
 
-def get_predictions_xgb(model_path, test_df):
+def get_predictions_xgb(model_path, test_df, encoding):
     """XGBoost 模型预测"""
     with open(model_path, 'rb') as f:
         data = pickle.load(f)
 
-    encoder = ESM2Encoder(pooling='mean', device='cpu')
+    encoder = EncoderRegistry.get(encoding)
     features = encoder.encode_batch(test_df['sequence'].tolist())
 
     ec_pred = data['ec_clf'].predict(features)
@@ -181,7 +181,7 @@ def compute_metrics(y_true, y_pred, classes, task_name):
     }
 
 
-def evaluate_model(model_name, model_path, test_df, get_pred_fn, output_dir):
+def evaluate_model(model_name, model_path, test_df, get_pred_fn, output_dir, encoding):
     """评估单个模型"""
     print(f"\n{'='*60}")
     print(f"评估模型: {model_name}")
@@ -232,6 +232,8 @@ def main():
     parser = argparse.ArgumentParser(description='完整模型评估')
     parser.add_argument('--data', type=str, default='data/datasets/balanced_with_go',
                         help='数据集目录')
+    parser.add_argument('--encoding', type=str, default='esm2', choices=['onehot', 'ctd', 'esm2'],
+                        help='特征编码方式')
     parser.add_argument('--output', type=str, default='results/evaluation',
                         help='输出目录')
     parser.add_argument('--models', type=str, default='all',
@@ -245,12 +247,13 @@ def main():
     print("加载测试数据...")
     test_df = load_test_data(args.data)
     print(f"测试集: {len(test_df)} 样本")
+    print(f"使用编码器: {args.encoding}")
 
     model_configs = {
-        'bnn': ('models/bnn_esm2_multitask/model.pt', get_predictions_bnn),
-        'mlp': ('models/mlp_esm2_multitask/model.pt', get_predictions_mlp),
-        'rf': ('models/rf_esm2_multitask/model.pkl', get_predictions_rf),
-        'xgb': ('models/xgb_esm2_multitask/model.pkl', get_predictions_xgb),
+        'bnn': (f'models/bnn_{args.encoding}_multitask/model.pt', get_predictions_bnn),
+        'mlp': (f'models/mlp_{args.encoding}_multitask/model.pt', get_predictions_mlp),
+        'rf': (f'models/rf_{args.encoding}_multitask/model.pkl', get_predictions_rf),
+        'xgb': (f'models/xgb_{args.encoding}_multitask/model.pkl', get_predictions_xgb),
     }
 
     if args.models == 'all':
@@ -271,7 +274,7 @@ def main():
             print(f"模型不存在: {model_path}")
             continue
 
-        results, model_data = evaluate_model(model_name, model_path, test_df, pred_fn, output_dir)
+        results, model_data = evaluate_model(model_name, model_path, test_df, pred_fn, output_dir, args.encoding)
         all_results[model_name] = results
         model_data_cache[model_name] = model_data
 

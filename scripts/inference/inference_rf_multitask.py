@@ -11,11 +11,11 @@ import pickle
 import json
 from pathlib import Path
 
-from src.encodings.esm2 import ESM2Encoder
+from src.encodings import EncoderRegistry
 
 
-def predict(sequence, model_data, esm2_encoder):
-    features = esm2_encoder.encode(sequence).reshape(1, -1)
+def predict(sequence, model_data, encoder):
+    features = encoder.encode(sequence).reshape(1, -1)
 
     ec_prob = model_data['ec_clf'].predict_proba(features)[0]
     loc_prob = model_data['loc_clf'].predict_proba(features)[0]
@@ -47,17 +47,24 @@ def predict(sequence, model_data, esm2_encoder):
 def main():
     import argparse
     parser = argparse.ArgumentParser(description='RandomForest 多任务推理')
-    parser.add_argument('--model', type=str, default='models/rf_esm2_multitask/model.pkl')
+    parser.add_argument('--model', type=str, default=None)
+    parser.add_argument('--encoding', type=str, default='esm2', choices=['onehot', 'ctd', 'esm2'],
+                        help='特征编码方式: onehot (20维), ctd (147维), esm2 (1280维)')
     parser.add_argument('--sequence', type=str, default=None)
     parser.add_argument('--fasta', type=str, default=None)
     parser.add_argument('--output', type=str, default=None)
     args = parser.parse_args()
 
+    # 自动推断模型路径
+    if args.model is None:
+        args.model = f'models/rf_{args.encoding}_multitask/model.pkl'
+
     print(f"加载模型: {args.model}")
     with open(args.model, 'rb') as f:
         model_data = pickle.load(f)
 
-    esm2 = ESM2Encoder(pooling='mean', device='cpu')
+    print(f"使用编码器: {args.encoding}")
+    encoder = EncoderRegistry.get(args.encoding)
 
     if args.fasta:
         with open(args.fasta) as f:
@@ -78,14 +85,14 @@ def main():
             names.append(current_name)
 
         for name, seq in zip(names, sequences):
-            result = predict(seq, model_data, esm2)
+            result = predict(seq, model_data, encoder)
             print(f"\n{name}:")
             print(f"  EC: {result['ec']['class']} ({result['ec']['confidence']:.3f})")
             print(f"  Loc: {result['localization']['class']} ({result['localization']['confidence']:.3f})")
             print(f"  Func: {result['function']['class']} ({result['function']['confidence']:.3f})")
 
     elif args.sequence:
-        result = predict(args.sequence, model_data, esm2)
+        result = predict(args.sequence, model_data, encoder)
         print(f"\n预测结果:")
         print(f"  EC: {result['ec']['class']} ({result['ec']['confidence']:.3f})")
         print(f"  定位: {result['localization']['class']} ({result['localization']['confidence']:.3f})")

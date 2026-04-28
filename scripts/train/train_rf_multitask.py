@@ -13,7 +13,7 @@ from pathlib import Path
 import json
 import pickle
 
-from src.encodings.esm2 import ESM2Encoder
+from src.encodings import EncoderRegistry
 
 
 def load_data(data_dir):
@@ -27,8 +27,14 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(description='RandomForest 多任务训练')
     parser.add_argument('--data', type=str, default='data/datasets/balanced_with_go')
-    parser.add_argument('--output', type=str, default='models/rf_esm2_multitask')
+    parser.add_argument('--encoding', type=str, default='esm2', choices=['onehot', 'ctd', 'esm2'],
+                        help='特征编码方式: onehot (20维), ctd (147维), esm2 (1280维)')
+    parser.add_argument('--output', type=str, default=None)
     args = parser.parse_args()
+
+    # 自动设置输出目录
+    if args.output is None:
+        args.output = f'models/rf_{args.encoding}_multitask'
 
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -64,17 +70,27 @@ def main():
     print(f"EC: {len(ec_classes)} 类, Loc: {len(loc_classes)} 类, Func: {len(first_labels)} 类")
 
     print("\n[3/4] 获取特征...")
-    feat_cache = Path(args.data) / 'esm2_features.npy'
+    print(f"使用编码器: {args.encoding}")
+
+    # 尝试加载缓存的特征，如果没有缓存则实时生成
+    feat_cache = Path(args.data) / f'{args.encoding}_features.npy'
+
     if feat_cache.exists():
-        print("加载缓存...")
+        print("加载缓存特征...")
         all_features = np.load(feat_cache)
         n_train, n_val = len(train_df), len(val_df)
         X_train = all_features[:n_train]
         X_test = all_features[n_train+n_val:]
     else:
-        encoder = ESM2Encoder(pooling='mean', device='cpu')
+        print(f"实时生成 {args.encoding} 特征...")
+        encoder = EncoderRegistry.get(args.encoding)
         X_train = encoder.encode_batch(train_df['sequence'].tolist())
+        X_val = encoder.encode_batch(val_df['sequence'].tolist())
         X_test = encoder.encode_batch(test_df['sequence'].tolist())
+
+        # 保存缓存
+        np.save(feat_cache, np.vstack([X_train, X_val, X_test]))
+        print(f"特征已缓存到: {feat_cache}")
 
     print("\n[4/4] 训练 RandomForest...")
 

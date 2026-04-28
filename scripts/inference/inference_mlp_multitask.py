@@ -12,7 +12,7 @@ import numpy as np
 from pathlib import Path
 import json
 
-from src.encodings.esm2 import ESM2Encoder
+from src.encodings import EncoderRegistry
 
 
 class MultiTaskMLP(nn.Module):
@@ -38,8 +38,8 @@ class MultiTaskMLP(nn.Module):
         return self.ec_head(h), self.loc_head(h), self.func_head(h)
 
 
-def predict(sequence, model, class_labels, esm2_encoder, device):
-    features = esm2_encoder.encode(sequence).reshape(1, -1)
+def predict(sequence, model, class_labels, encoder, device):
+    features = encoder.encode(sequence).reshape(1, -1)
     X = torch.FloatTensor(features).to(device)
     model.eval()
     with torch.no_grad():
@@ -65,11 +65,16 @@ def predict(sequence, model, class_labels, esm2_encoder, device):
 def main():
     import argparse
     parser = argparse.ArgumentParser(description='MLP 多任务推理')
-    parser.add_argument('--model', type=str, default='models/mlp_esm2_multitask/model.pt')
+    parser.add_argument('--model', type=str, default=None)
+    parser.add_argument('--encoding', type=str, default='esm2', choices=['onehot', 'ctd', 'esm2'],
+                        help='特征编码方式')
     parser.add_argument('--sequence', type=str, default=None)
     parser.add_argument('--fasta', type=str, default=None)
     parser.add_argument('--output', type=str, default=None)
     args = parser.parse_args()
+
+    if args.model is None:
+        args.model = f'models/mlp_{args.encoding}_multitask/model.pt'
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Device: {device}")
@@ -88,7 +93,8 @@ def main():
     model.eval()
 
     class_labels = {'ec_classes': ec_classes, 'loc_classes': loc_classes, 'func_classes': func_classes}
-    esm2 = ESM2Encoder(pooling='mean', device=device)
+    print(f"使用编码器: {args.encoding}")
+    encoder = EncoderRegistry.get(args.encoding)
 
     if args.fasta:
         with open(args.fasta) as f:
@@ -109,14 +115,14 @@ def main():
             names.append(current_name)
 
         for name, seq in zip(names, sequences):
-            result = predict(seq, model, class_labels, esm2, device)
+            result = predict(seq, model, class_labels, encoder, device)
             print(f"\n{name}:")
             print(f"  EC: {result['ec']['class']} ({result['ec']['confidence']:.3f})")
             print(f"  Loc: {result['localization']['class']} ({result['localization']['confidence']:.3f})")
             print(f"  Func: {result['function']['class']} ({result['function']['confidence']:.3f})")
 
     elif args.sequence:
-        result = predict(args.sequence, model, class_labels, esm2, device)
+        result = predict(args.sequence, model, class_labels, encoder, device)
         print(f"\n预测结果:")
         print(f"  EC: {result['ec']['class']} ({result['ec']['confidence']:.3f})")
         print(f"  定位: {result['localization']['class']} ({result['localization']['confidence']:.3f})")

@@ -11,7 +11,7 @@ import torch.nn as nn
 import numpy as np
 from pathlib import Path
 
-from src.encodings.esm2 import ESM2Encoder
+from src.encodings import EncoderRegistry
 
 
 class MultiTaskMultiLabelMLP(nn.Module):
@@ -37,8 +37,8 @@ class MultiTaskMultiLabelMLP(nn.Module):
         return self.ec_head(h), self.loc_head(h), self.func_head(h)
 
 
-def predict(sequence, model, class_labels, esm2_encoder, threshold=0.5, device='cpu'):
-    features = esm2_encoder.encode(sequence).reshape(1, -1)
+def predict(sequence, model, class_labels, encoder, threshold=0.5, device='cpu'):
+    features = encoder.encode(sequence).reshape(1, -1)
     X = torch.FloatTensor(features).to(device)
 
     model.eval()
@@ -92,11 +92,16 @@ def predict(sequence, model, class_labels, esm2_encoder, threshold=0.5, device='
 def main():
     import argparse
     parser = argparse.ArgumentParser(description='多标签推理')
-    parser.add_argument('--model', type=str, default='models/multilabel_esm2_multitask/model.pt')
+    parser.add_argument('--model', type=str, default=None)
+    parser.add_argument('--encoding', type=str, default='esm2', choices=['onehot', 'ctd', 'esm2'],
+                        help='特征编码方式')
     parser.add_argument('--sequence', type=str, default=None)
     parser.add_argument('--fasta', type=str, default=None)
     parser.add_argument('--threshold', type=float, default=0.5)
     args = parser.parse_args()
+
+    if args.model is None:
+        args.model = f'models/multilabel_{args.encoding}_multitask/model.pt'
 
     device = torch.device('cpu')
     print(f"设备: {device}")
@@ -118,7 +123,8 @@ def main():
         'func_classes': checkpoint['func_classes'],
     }
 
-    esm2 = ESM2Encoder(pooling='mean', device=device)
+    print(f"使用编码器: {args.encoding}")
+    encoder = EncoderRegistry.get(args.encoding)
 
     if args.fasta:
         with open(args.fasta) as f:
@@ -139,14 +145,14 @@ def main():
             names.append(current_name)
 
         for name, seq in zip(names, sequences):
-            result = predict(seq, model, class_labels, esm2, args.threshold, device)
+            result = predict(seq, model, class_labels, encoder, args.threshold, device)
             print(f"\n{name}:")
             print(f"  EC: {result['ec']['class']} ({result['ec']['confidence']:.3f})")
             print(f"  Loc: {result['localization']['class']} ({result['localization']['confidence']:.3f})")
             print(f"  功能 (阈值={args.threshold}): {result['function']['predicted_labels']}")
 
     elif args.sequence:
-        result = predict(args.sequence, model, class_labels, esm2, args.threshold, device)
+        result = predict(args.sequence, model, class_labels, encoder, args.threshold, device)
         print(f"\n预测结果:")
         print(f"  EC: {result['ec']['class']} ({result['ec']['confidence']:.3f})")
         print(f"  定位: {result['localization']['class']} ({result['localization']['confidence']:.3f})")
